@@ -44,7 +44,7 @@ docker compose up --build -d
 容器启动时会自动：
 
 1. 安装 / 校验 Python 依赖（`requirements.txt`）；
-2. 初始化 SQLite 数据库（建表，幂等）；
+2. 初始化 SQLite 数据库（建表；旧库的容量列自动迁移为十进制文本，幂等，详见下文「容量存储兼容性」）；
 3. 启动 Uvicorn 服务。
 
 启动后服务监听容器内 `8000` 端口，默认映射到宿主机 **`8000`**
@@ -70,6 +70,23 @@ $ curl -s http://localhost:8000/health
 
 示例：宿主机改用 18000 端口 —— `KILN_API_PORT=18000 docker compose up --build -d`。
 数据库通过命名卷 `kiln-data` 持久化于 `/data`。
+
+### 容量存储兼容性
+
+`capacity`（单窑容量）接受**任意正整数**，包括超过 SQLite 有符号 64 位
+整数上限 `9223372036854775807` 的超大容量。持久化时容量以**十进制文本**
+存放（`plans.capacity` 列为 `TEXT`），完整方案同时存于 `payload` JSON，
+因此**读取与 API 请求 / 响应中的 `capacity` 始终是普通 JSON 整数**，
+客户端无需感知存储格式。
+
+旧版本数据库（`capacity` 为 `INTEGER`）会在服务启动初始化时**自动升级**：
+
+- 在**单个事务**内重建 `plans` 表（建临时表 → 拷贝并 `CAST(capacity AS TEXT)`
+  → 替换旧表），**既有方案全部保留**；
+- 升级失败或进程中断时事务整体回滚，磁盘上始终只有迁移前或迁移后的
+  完整表，**不会留下半迁移表**；
+- 重复启动**幂等**：已是文本存储的库直接跳过，不做任何改动；
+- 升级不影响 `docker compose up --build -d` 的一键启动流程，无需手工迁移。
 
 ## API 地址与端口
 
@@ -98,7 +115,9 @@ $ curl -s http://localhost:8000/health
 ```
 
 字段约束：`items` 数量 1～14；`item_id` 为非空且唯一的字符串；`volume` 与
-`capacity` 为正整数；`temp_low ≤ temp_high`（温度为整数闭区间）。
+`capacity` 为正整数（`capacity` 无 64 位上限，超大容量按十进制文本持久化，
+见上文「容量存储兼容性」，接口仍按 JSON 整数收发）；`temp_low ≤ temp_high`
+（温度为整数闭区间）。
 
 成功响应 `201 Created`：
 
@@ -988,7 +1007,7 @@ pip install -r requirements.txt
 KILN_DB_PATH=./kiln.db uvicorn app.main:app --reload
 ```
 
-运行求解器、温控核验、点火排程、费用分摊、层位安排与质检抽样测试（无需第三方依赖，含随机用例的暴力枚举交叉验证）：
+运行求解器、温控核验、点火排程、费用分摊、层位安排、质检抽样与数据库迁移测试（无需第三方依赖，含随机用例的暴力枚举交叉验证）：
 
 ```bash
 python3 tests/test_solver.py
@@ -997,6 +1016,7 @@ python3 tests/test_firing.py
 python3 tests/test_cost_allocation.py
 python3 tests/test_shelf_placement.py
 python3 tests/test_inspection.py
+python3 tests/test_database.py
 ```
 
 ## 算法说明（n ≤ 14）
@@ -1133,7 +1153,7 @@ app/
   cost_allocation.py  # 烧成费用分摊：精确有理数水位法 + 余数补齐（纯函数）
   shelf_placement.py  # 窑内层位安排：后缀位掩码 DP 最大化最小温差（纯函数）
   inspection.py     # 成品质检抽样：子集递推 + 三级键择优（纯函数）
-  database.py       # SQLite 初始化与读写
+  database.py       # SQLite 初始化（含容量列文本迁移）与读写
   schemas.py        # Pydantic 请求/响应模型
   main.py           # FastAPI 路由
 tests/
@@ -1143,6 +1163,7 @@ tests/
   test_cost_allocation.py
   test_shelf_placement.py
   test_inspection.py
+  test_database.py
 entrypoint.sh   # 安装依赖 → 初始化数据库 → 启动服务
 Dockerfile
 docker-compose.yml
