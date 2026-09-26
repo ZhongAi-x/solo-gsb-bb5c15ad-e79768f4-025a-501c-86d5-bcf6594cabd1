@@ -1,0 +1,16 @@
+services:
+  kiln-api:
+    build: .
+    image: kiln-scheduler-api:latest
+    container_name: kiln-scheduler-api
+    ports:
+      - "${KILN_API_PORT:-8000}:8000"
+    environment:
+      # 容器内 SQLite 数据库文件路径
+      KILN_DB_PATH: /data/kiln.db
+    volumes:
+      - kiln-data:/data
+    restart: unless-stopped
+
+volumes:
+  kiln-data:
